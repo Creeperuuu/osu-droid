@@ -35,8 +35,8 @@ public class CursorTrail extends ParticleSystem {
 
         float life = 0.3f * GameHelper.getSpeedMultiplier();
 
-        addParticleModifier(new ExpireModifier(life));
-        addParticleModifier(new AlphaModifier(life, 1.0f, 0.0f, 0f, life));
+        addParticleModifier(new ExpireModifier(life * GameHelper.getSpeedMultiplier()));
+        addParticleModifier(new AlphaModifier(GameHelper.getSpeedMultiplier(), 0.0f, 0.0f, life));
 
         setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE_MINUS_SRC_ALPHA);
         addParticleInitializer(new ScaleInitializer(cursor.baseSize));
