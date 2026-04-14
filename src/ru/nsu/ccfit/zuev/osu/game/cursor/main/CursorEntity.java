@@ -1,21 +1,17 @@
 package ru.nsu.ccfit.zuev.osu.game.cursor.main;
 
 import org.anddev.andengine.entity.Entity;
-import org.anddev.andengine.entity.particle.emitter.PointParticleEmitter;
 import org.anddev.andengine.entity.scene.Scene;
 import org.anddev.andengine.opengl.texture.region.TextureRegion;
 
 import ru.nsu.ccfit.zuev.osu.Config;
-import ru.nsu.ccfit.zuev.osu.GlobalManager;
 import ru.nsu.ccfit.zuev.osu.ResourceManager;
 import ru.nsu.ccfit.zuev.osu.game.cursor.trail.CursorTrail;
 
 public class CursorEntity extends Entity {
     protected final CursorSprite cursorSprite;
     private CursorTrail trail = null;
-    private PointParticleEmitter emitter = null;
     private boolean isShowing = false;
-    private float particleOffsetX, particleOffsetY;
 
     public CursorEntity() {
         TextureRegion cursorTex = ResourceManager.getInstance().getTexture("cursor");
@@ -23,21 +19,12 @@ public class CursorEntity extends Entity {
 
         if (Config.isUseParticles()) {
             TextureRegion trailTex = ResourceManager.getInstance().getTexture("cursortrail");
-
-            particleOffsetX = -trailTex.getWidth() / 2f;
-            particleOffsetY = -trailTex.getHeight() / 2f;
-
-            var spawnRate = (int) (GlobalManager.getInstance().getMainActivity().getRefreshRate() * 2);
-
-            emitter = new PointParticleEmitter(particleOffsetX, particleOffsetY);
-            trail = new CursorTrail(emitter, spawnRate, trailTex, cursorSprite);
+            trail = new CursorTrail(trailTex, cursorSprite);
             trail.setParticlesSpawnEnabled(false);
         }
 
         attachChild(cursorSprite);
         setVisible(false);
-
-        // Not necessary to update by itself since it's done by GameScene.
         setIgnoreUpdate(true);
     }
 
@@ -55,27 +42,20 @@ public class CursorEntity extends Entity {
     public void update(float pSecondsElapsed) {
         if (isShowing) {
             cursorSprite.update(pSecondsElapsed);
-
-            if (trail != null) {
-                trail.update();
-            }
+            if (trail != null)
+                trail.update(getX(), getY(), pSecondsElapsed);
         }
-
         super.onManagedUpdate(pSecondsElapsed);
     }
 
     public void attachToScene(Scene fgScene) {
-        if (trail != null) {
-            fgScene.attachChild(trail);
-        }
+        if (trail != null)
+            trail.attachToScene(fgScene);
         fgScene.attachChild(this);
     }
 
     @Override
     public void setPosition(float pX, float pY) {
-        if (emitter != null)
-            emitter.setCenter(pX + particleOffsetX, pY + particleOffsetY);
-
         super.setPosition(pX, pY);
     }
 }
