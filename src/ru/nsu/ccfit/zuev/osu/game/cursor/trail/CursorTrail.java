@@ -1,32 +1,33 @@
 package ru.nsu.ccfit.zuev.osu.game.cursor.trail;
 
-import org.anddev.andengine.entity.Entity;
-import org.anddev.andengine.entity.scene.Scene;
 import org.anddev.andengine.entity.sprite.Sprite;
+import org.anddev.andengine.entity.scene.Scene;
 import org.anddev.andengine.opengl.texture.region.TextureRegion;
 
 import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
 import ru.nsu.ccfit.zuev.skins.OsuSkin;
 
-public class CursorTrail extends Entity {
+public class CursorTrail extends Sprite {
 
     // ── Tune these ────────────────────────────────────────────────────────
-    private static final int TRAIL_CAPACITY = 128; // max trail points
-    private static final int SAMPLE_SIZE = 8; // Bresenham: 1 point every N steps
-    private static final float SPRITE_SCALE = 0.8f;
+    private static final int TRAIL_CAPACITY = 128;
+    private static final int SAMPLE_SIZE = 8;
+    private static final float SPRITE_SCALE = 1.0f;
     // ─────────────────────────────────────────────────────────────────────
 
-    private final Sprite[] spritePool;
     private final float[] trailX;
     private final float[] trailY;
 
-    // Ring buffer indices
-    private int head = 0; // next write index
-    private int tail = 0; // oldest point index
-    private int count = 0; // current number of active points
+    private int head = 0;
+    private int tail = 0;
+    private int count = 0;
 
-    private final float halfW;
-    private final float halfH;
+    // unscaled offset to center the sprite on the cursor position
+    private final float offsetX;
+    private final float offsetY;
+    private final float drawW;
+    private final float drawH;
+    private final float scale;
     private final CursorSprite cursor;
 
     private boolean spawning = false;
@@ -35,28 +36,24 @@ public class CursorTrail extends Entity {
     private float currentFPS = 60f;
 
     public CursorTrail(TextureRegion texture, CursorSprite cursor) {
+        // Sprite at 0,0 — we only use its texture/batch capability, not its position
+        super(0, 0, texture);
         this.cursor = cursor;
 
-        float scale = cursor.baseSize * SPRITE_SCALE;
-        halfW = (texture.getWidth() * scale) / 2f;
-        halfH = (texture.getHeight() * scale) / 2f;
+        scale = cursor.baseSize * SPRITE_SCALE;
+        drawW = texture.getWidth() * scale;
+        drawH = texture.getHeight() * scale;
+        offsetX = drawW / 2f;
+        offsetY = drawH / 2f;
 
         trailX = new float[TRAIL_CAPACITY];
         trailY = new float[TRAIL_CAPACITY];
-        spritePool = new Sprite[TRAIL_CAPACITY];
 
-        for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            Sprite s = new Sprite(0, 0, texture);
-            s.setScale(scale);
-            s.setAlpha(0f);
-            spritePool[i] = s;
-        }
+        setVisible(false); // hide the base sprite — we draw manually
     }
 
     public void attachToScene(Scene scene) {
-        for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            scene.attachChild(spritePool[i]);
-        }
+        scene.attachChild(this); // only ONE scene child
     }
 
     public void setParticlesSpawnEnabled(boolean enabled) {
@@ -67,9 +64,8 @@ public class CursorTrail extends Entity {
             count = 0;
             lastX = Float.NaN;
             lastY = Float.NaN;
-            for (int i = 0; i < TRAIL_CAPACITY; i++)
-                spritePool[i].setAlpha(0f);
         }
+        setVisible(enabled);
     }
 
     public void update(float x, float y, float dt) {
@@ -82,38 +78,94 @@ public class CursorTrail extends Entity {
             return;
         }
 
-        // 1. Add points via Bresenham
         addCursorPoints((int) lastX, (int) lastY, (int) x, (int) y);
         lastX = x;
         lastY = y;
 
-        // 2. Remove from tail — only if trail is long enough to be worth trimming.
-        //    Skip removal when count is small so slow movement stays visible.
+        // remove from tail — skip when trail is short so slow movement stays visible
         if (count > 8) {
             float FPSmod = Math.max(currentFPS, 1) / 60f;
-            int removeCount = (int) (count / (6f * FPSmod)) + 1;
-            // Never remove more than half the trail in one frame
-            removeCount = Math.min(removeCount, count / 2);
+            int removeCount = Math.min((int) (count / (6f * FPSmod)) + 1, count / 2);
             for (int i = 0; i < removeCount; i++) {
-                spritePool[tail].setAlpha(0f);
                 tail = (tail + 1) % TRAIL_CAPACITY;
                 count--;
             }
         }
+    }
 
-        // 3. Refresh visible sprites
-        refreshSprites(x, y);
-        updateRotation();
+    // ── AndEngine calls this once per frame to draw this entity ──────────
+    @Override
+    protected void onManagedDraw(
+            final javax.microedition.khronos.opengles.GL10 pGL,
+            final org.anddev.andengine.engine.camera.Camera pCamera) {
+
+        if (count == 0) return;
+
+        float alphaStep = 1f / count;
+        float alpha = 0f;
+        float rotation = OsuSkin.get().isRotateCursorTrail() ? cursor.getRotation() : 0f;
+
+        // startUse/drawEmbedded/endUse = single GL batch for all trail points
+        getTextureRegion().getTexture().bind(pGL);
+        this.mTextureRegion.getTexture().bind(pGL);
+
+        beginDraw(pGL);
+        for (int i = 0; i < count; i++) {
+            int idx = (tail + i) % TRAIL_CAPACITY;
+            alpha = Math.min((i + 1) * alphaStep, 1f);
+            drawPoint(pGL, trailX[idx], trailY[idx], alpha, rotation);
+        }
+        endDraw(pGL);
+    }
+
+    private void beginDraw(javax.microedition.khronos.opengles.GL10 gl) {
+        gl.glEnable(javax.microedition.khronos.opengles.GL10.GL_BLEND);
+        gl.glBlendFunc(
+                javax.microedition.khronos.opengles.GL10.GL_SRC_ALPHA,
+                javax.microedition.khronos.opengles.GL10.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glEnable(javax.microedition.khronos.opengles.GL10.GL_TEXTURE_2D);
+    }
+
+    private void endDraw(javax.microedition.khronos.opengles.GL10 gl) {
+        // no-op — AndEngine restores state after onManagedDraw
+    }
+
+    private void drawPoint(
+            javax.microedition.khronos.opengles.GL10 gl,
+            float x, float y, float alpha, float rotation) {
+        gl.glPushMatrix();
+        gl.glTranslatef(x, y, 0);
+        if (rotation != 0f) gl.glRotatef(rotation, 0, 0, 1);
+        gl.glColor4f(1f, 1f, 1f, alpha);
+
+        float l = -offsetX, t = -offsetY, r = offsetX, b = offsetY;
+
+        final float[] verts = {l, t, r, t, l, b, r, b};
+        final float[] tex = {0, 0, 1, 0, 0, 1, 1, 1};
+
+        java.nio.FloatBuffer vb = java.nio.ByteBuffer.allocateDirect(32)
+                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+        vb.put(verts).position(0);
+
+        java.nio.FloatBuffer tb = java.nio.ByteBuffer.allocateDirect(32)
+                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+        tb.put(tex).position(0);
+
+        gl.glEnableClientState(javax.microedition.khronos.opengles.GL10.GL_VERTEX_ARRAY);
+        gl.glEnableClientState(javax.microedition.khronos.opengles.GL10.GL_TEXTURE_COORD_ARRAY);
+        gl.glVertexPointer(2, javax.microedition.khronos.opengles.GL10.GL_FLOAT, 0, vb);
+        gl.glTexCoordPointer(2, javax.microedition.khronos.opengles.GL10.GL_FLOAT, 0, tb);
+        gl.glDrawArrays(javax.microedition.khronos.opengles.GL10.GL_TRIANGLE_STRIP, 0, 4);
+        gl.glDisableClientState(javax.microedition.khronos.opengles.GL10.GL_VERTEX_ARRAY);
+        gl.glDisableClientState(javax.microedition.khronos.opengles.GL10.GL_TEXTURE_COORD_ARRAY);
+
+        gl.glPopMatrix();
     }
 
     private void addCursorPoints(int x1, int y1, int x2, int y2) {
-        int d = 0;
-        int dy = Math.abs(y2 - y1);
-        int dx = Math.abs(x2 - x1);
-        int dy2 = dy << 1;
-        int dx2 = dx << 1;
-        int ix = x1 < x2 ? 1 : -1;
-        int iy = y1 < y2 ? 1 : -1;
+        int d = 0, dy = Math.abs(y2 - y1), dx = Math.abs(x2 - x1);
+        int dy2 = dy << 1, dx2 = dx << 1;
+        int ix = x1 < x2 ? 1 : -1, iy = y1 < y2 ? 1 : -1;
 
         if (dy <= dx) {
             for (int i = 0; ; i++) {
@@ -148,8 +200,6 @@ public class CursorTrail extends Entity {
 
     private void pushPoint(float x, float y) {
         if (count == TRAIL_CAPACITY) {
-            // Buffer full — evict oldest
-            spritePool[tail].setAlpha(0f);
             tail = (tail + 1) % TRAIL_CAPACITY;
             count--;
         }
@@ -157,28 +207,5 @@ public class CursorTrail extends Entity {
         trailY[head] = y;
         head = (head + 1) % TRAIL_CAPACITY;
         count++;
-    }
-
-    private void refreshSprites(float curX, float curY) {
-        // Alpha step spans 0→1 across the whole trail
-        float alphaStep = count > 0 ? 1f / count : 0f;
-        float alpha = 0f;
-
-        for (int i = 0; i < count; i++) {
-            int idx = (tail + i) % TRAIL_CAPACITY;
-            alpha += alphaStep;
-            Sprite s = spritePool[idx];
-            s.setPosition(trailX[idx] - halfW, trailY[idx] - halfH);
-            s.setAlpha(alpha);
-        }
-    }
-
-    private void updateRotation() {
-        if (!OsuSkin.get().isRotateCursorTrail()) return;
-        float rot = cursor.getRotation();
-        for (int i = 0; i < count; i++) {
-            int idx = (tail + i) % TRAIL_CAPACITY;
-            spritePool[idx].setRotation(rot);
-        }
     }
 }

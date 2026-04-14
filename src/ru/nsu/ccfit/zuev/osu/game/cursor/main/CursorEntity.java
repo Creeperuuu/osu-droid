@@ -50,7 +50,7 @@ public class CursorEntity extends Entity {
 
     public void attachToScene(Scene fgScene) {
         if (trail != null)
-            trail.attachToScene(fgScene);
+            trail.attachToScene(fgScene); // adds 1 child, not 128
         fgScene.attachChild(this);
     }
 
