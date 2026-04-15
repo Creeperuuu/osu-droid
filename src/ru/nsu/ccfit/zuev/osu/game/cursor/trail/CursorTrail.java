@@ -1,59 +1,54 @@
 package ru.nsu.ccfit.zuev.osu.game.cursor.trail;
 
-import org.anddev.andengine.entity.particle.ParticleSystem;
-import org.anddev.andengine.entity.particle.emitter.PointParticleEmitter;
-import org.anddev.andengine.entity.particle.initializer.ScaleInitializer;
-import org.anddev.andengine.entity.particle.modifier.AlphaModifier;
-import org.anddev.andengine.entity.particle.modifier.ExpireModifier;
+import org.anddev.andengine.entity.Entity;
+import org.anddev.andengine.entity.sprite.Sprite;
 import org.anddev.andengine.opengl.texture.region.TextureRegion;
 
 import javax.microedition.khronos.opengles.GL10;
 
-import ru.nsu.ccfit.zuev.osu.game.GameHelper;
 import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
 
-public class CursorTrail extends ParticleSystem {
+public class CursorTrail extends Entity {
 
-    // ── Tune these ────────────────────────────────────────────────────────
-    private static final int SAMPLE_SIZE = 3; // Pixels between texture stamps
+    // ── Tune these for your device (perf vs visual length) ───────────────
+    // Lower capacity = faster, but shorter max trail
+    private static final int TRAIL_CAPACITY = 96; // was 128 — still plenty long, much cheaper
+
+    // Distance (pixels) between new trail stamps
+    // Higher = sparser/faster, lower = denser/smoother but more stamps
+    private static final float STAMP_STEP = 3.5f; // similar to old SAMPLE_SIZE=3, tuned for 30-60
+                                                  // FPS
+
+    // How fast each stamp fades (alpha units per second)
+    // Higher value = shorter trail, lower value = longer trail
+    // 3.0f ≈ 0.33 seconds lifetime — gives nice long trail without killing FPS
+    private static final float FADE_RATE = 3.0f;
     // ─────────────────────────────────────────────────────────────────────
 
-    private final PointParticleEmitter emitter;
-    private final CursorSprite cursor;
+    private final Sprite[] sprites;
 
-    private boolean spawning = false;
-    private float lastX = Float.NaN;
-    private float lastY = Float.NaN;
-    
     private final float offsetX;
     private final float offsetY;
 
-    public CursorTrail(
-            PointParticleEmitter emitter,
-            int maxCapacity,
-            TextureRegion pTextureRegion,
-            CursorSprite cursor
-    ) {
-        // maxCapacity allows us to keep a long tail without overflowing
-        super(emitter, maxCapacity, maxCapacity, maxCapacity, pTextureRegion);
-        
-        this.emitter = emitter;
-        this.cursor = cursor;
+    private int nextSpriteIndex = 0;
+    private boolean spawning = false;
+    private float lastX = Float.NaN;
+    private float lastY = Float.NaN;
 
-        this.offsetX = -pTextureRegion.getWidth() / 2f;
-        this.offsetY = -pTextureRegion.getHeight() / 2f;
+    public CursorTrail(TextureRegion trailTex, CursorSprite cursor) {
+        sprites = new Sprite[TRAIL_CAPACITY];
 
-        // Tune lifeTime to make the trail longer or shorter
-        float lifeTime = 0.6f;
-        addParticleModifier(new ExpireModifier(lifeTime * GameHelper.getSpeedMultiplier()));
-        addParticleModifier(new AlphaModifier(GameHelper.getSpeedMultiplier(), 0.0f, 0f, lifeTime));
+        offsetX = -trailTex.getWidth() / 2f;
+        offsetY = -trailTex.getHeight() / 2f;
 
-        // Additive blending for the continuous ribbon glow
-        setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE);
-        addParticleInitializer(new ScaleInitializer(cursor.baseSize));
-
-        // Disable auto-spawn; we will force spawn exactly where we want via Bresenham
-        setParticlesSpawnEnabled(false);
+        for (int i = 0; i < TRAIL_CAPACITY; i++) {
+            Sprite s = new Sprite(0, 0, trailTex);
+            s.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE);
+            s.setAlpha(0f);
+            s.setScale(cursor.baseSize);
+            sprites[i] = s;
+            attachChild(s);
+        }
     }
 
     public void setParticlesSpawnEnabled(boolean enabled) {
@@ -61,51 +56,68 @@ public class CursorTrail extends ParticleSystem {
         if (!enabled) {
             lastX = Float.NaN;
             lastY = Float.NaN;
+            nextSpriteIndex = 0;
+            for (Sprite s : sprites) {
+                s.setAlpha(0f);
+            }
         }
     }
 
-    public void update(float x, float y) {
+    public void update(float x, float y, float dt) {
         if (!spawning) return;
 
         if (Float.isNaN(lastX)) {
-            spawnAt(x, y);
+            stamp(x, y);
             lastX = x;
             lastY = y;
             return;
         }
 
-        // Fill the path smoothly
-        addCursorPoints((int) lastX, (int) lastY, (int) x, (int) y);
-        
-        lastX = x;
-        lastY = y;
-    }
+        // ── Distance-based stamping (much cheaper than Bresenham every frame) ──
+        final float dx = x - lastX;
+        final float dy = y - lastY;
+        final float distSq = dx * dx + dy * dy;
 
-    private void spawnAt(float x, float y) {
-        // Move the emitter exactly to the Bresenham point
-        emitter.setCenter(x + offsetX, y + offsetY);
-        // This is the trick: force the ParticleSystem to push 1 stamp into the batch immediately
-        super.onManagedUpdate(0.001f); 
-    }
+        if (distSq > STAMP_STEP * STAMP_STEP) {
+            final float dist = (float) Math.sqrt(distSq);
+            final int numStamps = Math.max(1, (int) (dist / STAMP_STEP));
 
-    private void addCursorPoints(int x1, int y1, int x2, int y2) {
-        int d=0, dy=Math.abs(y2-y1), dx=Math.abs(x2-x1);
-        int dy2=dy<<1, dx2=dx<<1;
-        int ix=x1<x2?1:-1, iy=y1<y2?1:-1;
+            final float stepX = dx / numStamps;
+            final float stepY = dy / numStamps;
 
-        if (dy <= dx) {
-            for (int i=0;;i++) {
-                if (i == SAMPLE_SIZE) { spawnAt(x1, y1); i=0; }
-                if (x1 == x2) break;
-                x1+=ix; d+=dy2;
-                if (d > dx) { y1+=iy; d-=dx2; }
+            float px = lastX;
+            float py = lastY;
+
+            for (int k = 1; k <= numStamps; k++) {
+                px += stepX;
+                py += stepY;
+                stamp(px, py);
             }
-        } else {
-            for (int i=0;;i++) {
-                if (i == SAMPLE_SIZE) { spawnAt(x1, y1); i=0; }
-                if (y1 == y2) break;
-                y1+=iy; d+=dx2;
-                if (d > dy) { x1+=ix; d-=dy2; }
+
+            lastX = x;
+            lastY = y;
+        }
+
+        // ── Fade all active stamps (time-based, frame-rate independent) ──
+        fadeTrails(dt);
+    }
+
+    private void stamp(float x, float y) {
+        final Sprite s = sprites[nextSpriteIndex];
+        s.setPosition(x + offsetX, y + offsetY);
+        s.setAlpha(1f);
+
+        nextSpriteIndex = (nextSpriteIndex + 1) % TRAIL_CAPACITY;
+    }
+
+    private void fadeTrails(float dt) {
+        final float fadeAmount = FADE_RATE * dt;
+
+        for (int i = 0; i < TRAIL_CAPACITY; i++) {
+            final Sprite s = sprites[i];
+            if (s.getAlpha() > 0f) {
+                float newAlpha = s.getAlpha() - fadeAmount;
+                s.setAlpha(Math.max(0f, newAlpha));
             }
         }
     }

@@ -1,7 +1,6 @@
 package ru.nsu.ccfit.zuev.osu.game.cursor.main;
 
 import org.anddev.andengine.entity.Entity;
-import org.anddev.andengine.entity.particle.emitter.PointParticleEmitter;
 import org.anddev.andengine.entity.scene.Scene;
 import org.anddev.andengine.opengl.texture.region.TextureRegion;
 
@@ -21,8 +20,9 @@ public class CursorEntity extends Entity {
         if (Config.isUseParticles()) {
             TextureRegion trailTex = ResourceManager.getInstance().getTexture("cursortrail");
 
-            // Allow a capacity of 200 for a long, gapless tail
-            trail = new CursorTrail(new PointParticleEmitter(0, 0), 200, trailTex, cursorSprite);
+            // Pass the texture to our optimized trail
+            trail = new CursorTrail(trailTex, cursorSprite);
+            trail.setParticlesSpawnEnabled(false);
         }
 
         attachChild(cursorSprite);
@@ -33,7 +33,8 @@ public class CursorEntity extends Entity {
     public void setShowing(boolean showing) {
         isShowing = showing;
         setVisible(showing);
-        if (trail != null) trail.setParticlesSpawnEnabled(showing);
+        if (trail != null)
+            trail.setParticlesSpawnEnabled(showing);
     }
 
     public void click() {
@@ -43,16 +44,17 @@ public class CursorEntity extends Entity {
     public void update(float pSecondsElapsed) {
         if (isShowing) {
             cursorSprite.update(pSecondsElapsed);
-            if (trail != null) {
-                // Feeds current coordinates into the Bresenham logic
-                trail.update(getX(), getY());
-            }
+            if (trail != null)
+                trail.update(getX(), getY(), pSecondsElapsed);
         }
         super.onManagedUpdate(pSecondsElapsed);
     }
 
     public void attachToScene(Scene fgScene) {
-        if (trail != null) fgScene.attachChild(trail);
+        if (trail != null) {
+            // Attaching the parent trail entity automatically brings all 128 child sprites with it
+            fgScene.attachChild(trail);
+        }
         fgScene.attachChild(this);
     }
 
