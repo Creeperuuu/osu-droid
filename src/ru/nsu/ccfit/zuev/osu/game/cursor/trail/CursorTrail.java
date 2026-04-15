@@ -12,32 +12,36 @@ import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
 public class CursorTrail extends Entity {
 
     // ── Tune these ────────────────────────────────────────────────────────
-    private static final int TRAIL_CAPACITY = 128; // Length of the trail
+    private static final int TRAIL_CAPACITY = 1024; // Increased to prevent clipping on fast swipes
     private static final int SAMPLE_SIZE = 3; // Pixels between texture stamps
+    private static final float MAX_LIFETIME = 0.35f; // How long the trail lives in seconds
     // ─────────────────────────────────────────────────────────────────────
 
-    // We only use ONE Sprite to do all the drawing
     private final StampSprite stamp;
 
-    // Ring buffer of recorded positions
-    private final float[] px = new float[TRAIL_CAPACITY + 1];
-    private final float[] py = new float[TRAIL_CAPACITY + 1];
+    // Time-based ring buffer
+    private final float[] px = new float[TRAIL_CAPACITY];
+    private final float[] py = new float[TRAIL_CAPACITY];
+    private final float[] pTime = new float[TRAIL_CAPACITY];
+
     private int head = 0;
     private int count = 0;
+    private int sampleCounter = 0; // Persists across frames to fix slow movement
 
     private boolean spawning = false;
     private float lastX = Float.NaN;
     private float lastY = Float.NaN;
-    private float currentFPS = 60f;
+    private float currentTime = 0f;
 
     private final float offsetX;
     private final float offsetY;
+    private final float baseSize;
 
     public CursorTrail(TextureRegion trailTex, CursorSprite cursor) {
-        // Initialize our single stamp
         stamp = new StampSprite(0, 0, trailTex);
         stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE); // Additive blending
-        stamp.setScale(cursor.baseSize);
+
+        this.baseSize = cursor.baseSize;
 
         offsetX = -trailTex.getWidth() / 2f;
         offsetY = -trailTex.getHeight() / 2f;
@@ -48,13 +52,14 @@ public class CursorTrail extends Entity {
         if (!enabled) {
             head = 0;
             count = 0;
+            sampleCounter = 0;
             lastX = Float.NaN;
             lastY = Float.NaN;
         }
     }
 
     public void update(float x, float y, float dt) {
-        if (dt > 0) currentFPS = 1f / dt;
+        currentTime += dt; // Track absolute time for smooth decay
         if (!spawning) return;
 
         if (Float.isNaN(lastX)) {
@@ -68,20 +73,15 @@ public class CursorTrail extends Entity {
         addCursorPoints((int) lastX, (int) lastY, (int) x, (int) y);
         lastX = x;
         lastY = y;
-
-        // Remove from tail proportionally
-        if (count > 2) {
-            float FPSmod = Math.max(currentFPS, 1f) / 60f;
-            int removeCount = Math.min((int) (count / (12f * FPSmod)) + 1, count - 2);
-            count -= removeCount;
-        }
     }
 
     private void pushPoint(float x, float y) {
-        px[head % (TRAIL_CAPACITY + 1)] = x;
-        py[head % (TRAIL_CAPACITY + 1)] = y;
-        head++;
-        if (count < TRAIL_CAPACITY + 1) count++;
+        px[head] = x;
+        py[head] = y;
+        pTime[head] = currentTime;
+
+        head = (head + 1) % TRAIL_CAPACITY;
+        if (count < TRAIL_CAPACITY) count++;
     }
 
     private void addCursorPoints(int x1, int y1, int x2, int y2) {
@@ -90,10 +90,12 @@ public class CursorTrail extends Entity {
         int ix = x1 < x2 ? 1 : -1, iy = y1 < y2 ? 1 : -1;
 
         if (dy <= dx) {
-            for (int i = 0; ; i++) {
-                if (i == SAMPLE_SIZE) {
+            for (; ; ) {
+                // Persistent counter guarantees a drop every SAMPLE_SIZE pixels, even if moving
+                // slowly
+                if (sampleCounter >= SAMPLE_SIZE) {
                     pushPoint(x1, y1);
-                    i = 0;
+                    sampleCounter = 0;
                 }
                 if (x1 == x2) break;
                 x1 += ix;
@@ -102,12 +104,13 @@ public class CursorTrail extends Entity {
                     y1 += iy;
                     d -= dx2;
                 }
+                sampleCounter++;
             }
         } else {
-            for (int i = 0; ; i++) {
-                if (i == SAMPLE_SIZE) {
+            for (; ; ) {
+                if (sampleCounter >= SAMPLE_SIZE) {
                     pushPoint(x1, y1);
-                    i = 0;
+                    sampleCounter = 0;
                 }
                 if (y1 == y2) break;
                 y1 += iy;
@@ -116,6 +119,7 @@ public class CursorTrail extends Entity {
                     x1 += ix;
                     d -= dy2;
                 }
+                sampleCounter++;
             }
         }
     }
@@ -124,18 +128,34 @@ public class CursorTrail extends Entity {
     protected void onManagedDraw(GL10 pGL, Camera pCamera) {
         if (count == 0) return;
 
-        int segments = Math.min(count - 1, TRAIL_CAPACITY);
-        int start = head - count;
-        float alphaStep = segments > 0 ? 1f / segments : 0f;
+        // 1. Prune dead points strictly based on time
+        int activeCount = 0;
+        for (int i = 0; i < count; i++) {
+            int idx = (head - 1 - i);
+            if (idx < 0) idx += TRAIL_CAPACITY;
 
-        // Draw the single stamp multiple times directly to the GPU
-        for (int i = 0; i < segments; i++) {
-            int idx = (start + i) & Integer.MAX_VALUE;
-            float ax = px[idx % (TRAIL_CAPACITY + 1)];
-            float ay = py[idx % (TRAIL_CAPACITY + 1)];
+            if (currentTime - pTime[idx] > MAX_LIFETIME) {
+                break; // Because points are chronological, we can safely stop here
+            }
+            activeCount++;
+        }
+        count = activeCount;
 
-            stamp.setPosition(ax + offsetX, ay + offsetY);
-            stamp.setAlpha((i + 1) * alphaStep);
+        // 2. Draw active points (Oldest to Newest for proper layering)
+        for (int i = count - 1; i >= 0; i--) {
+            int idx = (head - 1 - i);
+            if (idx < 0) idx += TRAIL_CAPACITY;
+
+            float age = currentTime - pTime[idx];
+
+            // Ratio goes from 1.0 (brand new) to 0.0 (ready to die)
+            float ratio = Math.max(0f, 1f - (age / MAX_LIFETIME));
+
+            stamp.setPosition(px[idx] + offsetX, py[idx] + offsetY);
+            stamp.setAlpha(ratio);
+
+            // This is the magic line that tapers the tail exactly like the image
+            stamp.setScale(baseSize * ratio);
 
             stamp.drawNow(pGL, pCamera);
         }
