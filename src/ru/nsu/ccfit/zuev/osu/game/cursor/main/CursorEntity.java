@@ -18,7 +18,8 @@ public class CursorEntity extends Entity {
         cursorSprite = new CursorSprite(-cursorTex.getWidth() / 2f, -cursorTex.getWidth() / 2f, cursorTex);
 
         if (Config.isUseParticles()) {
-            trail = new CursorTrail(cursorSprite);
+            TextureRegion trailTex = ResourceManager.getInstance().getTexture("cursortrail");
+            trail = new CursorTrail(trailTex, cursorSprite);
             trail.setParticlesSpawnEnabled(false);
         }
 

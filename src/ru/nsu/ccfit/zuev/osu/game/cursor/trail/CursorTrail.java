@@ -1,22 +1,29 @@
 package ru.nsu.ccfit.zuev.osu.game.cursor.trail;
 
 import org.anddev.andengine.entity.Entity;
-import org.anddev.andengine.entity.primitive.Line;
 import org.anddev.andengine.entity.scene.Scene;
+import org.anddev.andengine.entity.sprite.Sprite;
+import org.anddev.andengine.opengl.texture.region.TextureRegion;
 
 import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
+import ru.nsu.ccfit.zuev.skins.OsuSkin;
 
 public class CursorTrail extends Entity {
 
     // ── Tune these ────────────────────────────────────────────────────────
-    private static final int TRAIL_CAPACITY = 64; // number of line segments
-    private static final int SAMPLE_SIZE = 3; // Bresenham: 1 point per N steps
-    private static final float LINE_WIDTH = 8f; // thickness of the trail line
+    // SAMPLE_SIZE controls both point density AND the fixed sprite width.
+    // Higher = fewer sprites needed, better FPS, slightly less smooth.
+    private static final int SAMPLE_SIZE = 5;
+    // Total trail length in points. Length in pixels = TRAIL_CAPACITY * SAMPLE_SIZE.
+    // 120 * 5 = 600px trail length.
+    private static final int TRAIL_CAPACITY = 120;
     // ─────────────────────────────────────────────────────────────────────
 
-    private final Line[] lines;
+    private final Sprite[] segments;
+    private final TextureRegion texture;
+    private final CursorSprite cursor;
 
-    // Ring buffer of recorded positions
+    // Ring buffer
     private final float[] px = new float[TRAIL_CAPACITY + 1];
     private final float[] py = new float[TRAIL_CAPACITY + 1];
     private int head = 0;
@@ -27,19 +34,33 @@ public class CursorTrail extends Entity {
     private float lastY = Float.NaN;
     private float currentFPS = 60f;
 
-    public CursorTrail(CursorSprite cursor) {
-        lines = new Line[TRAIL_CAPACITY];
+    // Fixed sprite dimensions — computed once at construction, never changed
+    private final float spriteW; // = SAMPLE_SIZE (segment length)
+    private final float spriteH; // = texture height scaled by cursor size
+
+    public CursorTrail(TextureRegion texture, CursorSprite cursor) {
+        this.texture = texture;
+        this.cursor = cursor;
+
+        // Width = exactly one Bresenham step so no gap and no overlap
+        spriteW = SAMPLE_SIZE;
+        // Height = texture natural height * cursor scale — this IS the trail thickness
+        spriteH = texture.getHeight() * cursor.baseSize;
+
+        segments = new Sprite[TRAIL_CAPACITY];
         for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            Line l = new Line(0, 0, 0, 0);
-            l.setLineWidth(LINE_WIDTH * cursor.baseSize);
-            l.setAlpha(0f);
-            lines[i] = l;
+            // Construct with fixed size — never resized at runtime
+            Sprite s = new Sprite(0, 0, spriteW, spriteH, texture);
+            // Rotation always pivots around sprite center
+            s.setRotationCenter(spriteW / 2f, spriteH / 2f);
+            s.setAlpha(0f);
+            segments[i] = s;
         }
     }
 
     public void attachToScene(Scene scene) {
         for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            scene.attachChild(lines[i]);
+            scene.attachChild(segments[i]);
         }
     }
 
@@ -50,7 +71,7 @@ public class CursorTrail extends Entity {
             count = 0;
             lastX = Float.NaN;
             lastY = Float.NaN;
-            for (Line l : lines) l.setAlpha(0f);
+            for (Sprite s : segments) s.setAlpha(0f);
         }
     }
 
@@ -65,52 +86,66 @@ public class CursorTrail extends Entity {
             return;
         }
 
-        // Fill all points along the path using Bresenham
         addCursorPoints((int) lastX, (int) lastY, (int) x, (int) y);
         lastX = x;
         lastY = y;
 
-        // Remove from tail proportional to size — same formula as opsu
-        if (count > 2) {
+        // Remove from tail proportional to size — trail fades out naturally
+        if (count > 4) {
             float FPSmod = Math.max(currentFPS, 1f) / 60f;
             int removeCount = Math.min((int) (count / (6f * FPSmod)) + 1, count - 2);
             count -= removeCount;
         }
 
-        refreshLines();
+        refreshSegments();
     }
 
-    private void pushPoint(float x, float y) {
-        px[head % (TRAIL_CAPACITY + 1)] = x;
-        py[head % (TRAIL_CAPACITY + 1)] = y;
-        head++;
-        if (count < TRAIL_CAPACITY + 1) count++;
-    }
-
-    private void refreshLines() {
-        // number of segments = number of points - 1
-        int segments = Math.min(count - 1, TRAIL_CAPACITY);
-        int start = head - count; // oldest point offset
-
-        float alphaStep = segments > 0 ? 1f / segments : 0f;
+    private void refreshSegments() {
+        int segCount = Math.min(count - 1, TRAIL_CAPACITY);
+        int start = head - count;
+        float alphaStep = segCount > 0 ? 1f / segCount : 0f;
 
         for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            Line l = lines[i];
-            if (i >= segments) {
-                if (l.getAlpha() != 0f) l.setAlpha(0f);
+            Sprite s = segments[i];
+            if (i >= segCount) {
+                // Avoid redundant GL calls — only hide if currently visible
+                if (s.getAlpha() != 0f) s.setAlpha(0f);
                 continue;
             }
 
-            int idxA = (start + i) & Integer.MAX_VALUE;
-            int idxB = (start + i + 1) & Integer.MAX_VALUE;
-            float ax = px[idxA % (TRAIL_CAPACITY + 1)];
-            float ay = py[idxA % (TRAIL_CAPACITY + 1)];
-            float bx = px[idxB % (TRAIL_CAPACITY + 1)];
-            float by = py[idxB % (TRAIL_CAPACITY + 1)];
+            int idxA = ((start + i) % (TRAIL_CAPACITY + 1) + (TRAIL_CAPACITY + 1)) % (TRAIL_CAPACITY + 1);
+            int idxB = ((start + i + 1) % (TRAIL_CAPACITY + 1) + (TRAIL_CAPACITY + 1)) % (TRAIL_CAPACITY + 1);
 
-            l.setPosition(ax, ay, bx, by);
-            l.setAlpha((i + 1) * alphaStep);
+            float ax = px[idxA], ay = py[idxA];
+            float bx = px[idxB], by = py[idxB];
+            float dx = bx - ax;
+            float dy = by - ay;
+
+            // Skip degenerate segments
+            if (dx == 0 && dy == 0) {
+                if (s.getAlpha() != 0f) s.setAlpha(0f);
+                continue;
+            }
+
+            // atan2 gives us angle without needing sqrt — position at midpoint
+            float angle = (float) Math.toDegrees(Math.atan2(dy, dx));
+            float midX = (ax + bx) * 0.5f;
+            float midY = (ay + by) * 0.5f;
+
+            s.setPosition(midX - spriteW * 0.5f, midY - spriteH * 0.5f);
+            s.setRotation(OsuSkin.get().isRotateCursorTrail()
+                    ? angle + cursor.getRotation()
+                    : angle);
+            s.setAlpha((i + 1) * alphaStep);
         }
+    }
+
+    private void pushPoint(float x, float y) {
+        int idx = head % (TRAIL_CAPACITY + 1);
+        px[idx] = x;
+        py[idx] = y;
+        head++;
+        if (count < TRAIL_CAPACITY + 1) count++;
     }
 
     private void addCursorPoints(int x1, int y1, int x2, int y2) {
