@@ -11,22 +11,19 @@ import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
 
 public class CursorTrail extends Entity {
 
-    // ── Tune these ────────────────────────────────────────────────────────
-    private static final int TRAIL_CAPACITY = 1024; // Increased to prevent clipping on fast swipes
-    private static final int SAMPLE_SIZE = 3; // Pixels between texture stamps
-    private static final float MAX_LIFETIME = 0.35f; // How long the trail lives in seconds
+    // ── Optimized for Smoothness ─────────────────────────────────────────
+    private static final int TRAIL_CAPACITY = 2048; // Higher capacity for high-density points
+    private static final float MAX_LIFETIME = 0.35f;
     // ─────────────────────────────────────────────────────────────────────
 
     private final StampSprite stamp;
 
-    // Time-based ring buffer
     private final float[] px = new float[TRAIL_CAPACITY];
     private final float[] py = new float[TRAIL_CAPACITY];
     private final float[] pTime = new float[TRAIL_CAPACITY];
 
     private int head = 0;
     private int count = 0;
-    private int sampleCounter = 0; // Persists across frames to fix slow movement
 
     private boolean spawning = false;
     private float lastX = Float.NaN;
@@ -39,10 +36,9 @@ public class CursorTrail extends Entity {
 
     public CursorTrail(TextureRegion trailTex, CursorSprite cursor) {
         stamp = new StampSprite(0, 0, trailTex);
-        stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE); // Additive blending
+        stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE);
 
         this.baseSize = cursor.baseSize;
-
         offsetX = -trailTex.getWidth() / 2f;
         offsetY = -trailTex.getHeight() / 2f;
     }
@@ -52,14 +48,13 @@ public class CursorTrail extends Entity {
         if (!enabled) {
             head = 0;
             count = 0;
-            sampleCounter = 0;
             lastX = Float.NaN;
             lastY = Float.NaN;
         }
     }
 
     public void update(float x, float y, float dt) {
-        currentTime += dt; // Track absolute time for smooth decay
+        currentTime += dt;
         if (!spawning) return;
 
         if (Float.isNaN(lastX)) {
@@ -69,8 +64,9 @@ public class CursorTrail extends Entity {
             return;
         }
 
-        // Fill all points along the path
-        addCursorPoints((int) lastX, (int) lastY, (int) x, (int) y);
+        // Drop points much more frequently to eliminate "hexagon" corners
+        fillPath(lastX, lastY, x, y);
+
         lastX = x;
         lastY = y;
     }
@@ -84,43 +80,28 @@ public class CursorTrail extends Entity {
         if (count < TRAIL_CAPACITY) count++;
     }
 
-    private void addCursorPoints(int x1, int y1, int x2, int y2) {
-        int d = 0, dy = Math.abs(y2 - y1), dx = Math.abs(x2 - x1);
-        int dy2 = dy << 1, dx2 = dx << 1;
-        int ix = x1 < x2 ? 1 : -1, iy = y1 < y2 ? 1 : -1;
+    /**
+     * High-density path filling. This ensures that even during fast spins, points are placed close
+     * enough together that they form a perfect curve.
+     */
+    private void fillPath(float x1, float y1, float x2, float y2) {
+        float dx = x2 - x1;
+        float dy = y2 - y1;
+        float distance = (float) Math.sqrt(dx * dx + dy * dy);
 
-        if (dy <= dx) {
-            for (; ; ) {
-                // Persistent counter guarantees a drop every SAMPLE_SIZE pixels, even if moving
-                // slowly
-                if (sampleCounter >= SAMPLE_SIZE) {
-                    pushPoint(x1, y1);
-                    sampleCounter = 0;
-                }
-                if (x1 == x2) break;
-                x1 += ix;
-                d += dy2;
-                if (d > dx) {
-                    y1 += iy;
-                    d -= dx2;
-                }
-                sampleCounter++;
-            }
-        } else {
-            for (; ; ) {
-                if (sampleCounter >= SAMPLE_SIZE) {
-                    pushPoint(x1, y1);
-                    sampleCounter = 0;
-                }
-                if (y1 == y2) break;
-                y1 += iy;
-                d += dx2;
-                if (d > dy) {
-                    x1 += ix;
-                    d -= dy2;
-                }
-                sampleCounter++;
-            }
+        // Drop a point roughly every 1.5 pixels regardless of speed.
+        // This is the "sweet spot" for perfect circles without lag.
+        float stepSize = 1.5f;
+        int steps = (int) (distance / stepSize);
+
+        if (steps <= 0) {
+            pushPoint(x2, y2);
+            return;
+        }
+
+        for (int i = 1; i <= steps; i++) {
+            float t = (float) i / steps;
+            pushPoint(x1 + dx * t, y1 + dy * t);
         }
     }
 
@@ -128,40 +109,34 @@ public class CursorTrail extends Entity {
     protected void onManagedDraw(GL10 pGL, Camera pCamera) {
         if (count == 0) return;
 
-        // 1. Prune dead points strictly based on time
+        // Prune old points
         int activeCount = 0;
         for (int i = 0; i < count; i++) {
             int idx = (head - 1 - i);
             if (idx < 0) idx += TRAIL_CAPACITY;
-
-            if (currentTime - pTime[idx] > MAX_LIFETIME) {
-                break; // Because points are chronological, we can safely stop here
-            }
+            if (currentTime - pTime[idx] > MAX_LIFETIME) break;
             activeCount++;
         }
         count = activeCount;
 
-        // 2. Draw active points (Oldest to Newest for proper layering)
+        // Draw oldest to newest
         for (int i = count - 1; i >= 0; i--) {
             int idx = (head - 1 - i);
             if (idx < 0) idx += TRAIL_CAPACITY;
 
             float age = currentTime - pTime[idx];
-
-            // Ratio goes from 1.0 (brand new) to 0.0 (ready to die)
             float ratio = Math.max(0f, 1f - (age / MAX_LIFETIME));
 
             stamp.setPosition(px[idx] + offsetX, py[idx] + offsetY);
-            stamp.setAlpha(ratio);
 
-            // This is the magic line that tapers the tail exactly like the image
+            // Linear scaling and fading as requested
+            stamp.setAlpha(ratio);
             stamp.setScale(baseSize * ratio);
 
             stamp.drawNow(pGL, pCamera);
         }
     }
 
-    // A helper class to safely expose AndEngine's protected drawing methods
     private static class StampSprite extends Sprite {
         public StampSprite(float pX, float pY, TextureRegion pTextureRegion) {
             super(pX, pY, pTextureRegion);
