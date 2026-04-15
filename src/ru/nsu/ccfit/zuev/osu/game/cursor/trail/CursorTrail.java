@@ -1,5 +1,6 @@
 package ru.nsu.ccfit.zuev.osu.game.cursor.trail;
 
+import org.anddev.andengine.engine.camera.Camera;
 import org.anddev.andengine.entity.Entity;
 import org.anddev.andengine.entity.sprite.Sprite;
 import org.anddev.andengine.opengl.texture.region.TextureRegion;
@@ -10,115 +11,144 @@ import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
 
 public class CursorTrail extends Entity {
 
-    // ── Tune these for your device (perf vs visual length) ───────────────
-    // Lower capacity = faster, but shorter max trail
-    private static final int TRAIL_CAPACITY = 96; // was 128 — still plenty long, much cheaper
-
-    // Distance (pixels) between new trail stamps
-    // Higher = sparser/faster, lower = denser/smoother but more stamps
-    private static final float STAMP_STEP = 3.5f; // similar to old SAMPLE_SIZE=3, tuned for 30-60
-                                                  // FPS
-
-    // How fast each stamp fades (alpha units per second)
-    // Higher value = shorter trail, lower value = longer trail
-    // 3.0f ≈ 0.33 seconds lifetime — gives nice long trail without killing FPS
-    private static final float FADE_RATE = 3.0f;
+    // ── Tune these ────────────────────────────────────────────────────────
+    private static final int TRAIL_CAPACITY = 128; // Length of the trail
+    private static final int SAMPLE_SIZE = 3; // Pixels between texture stamps
     // ─────────────────────────────────────────────────────────────────────
 
-    private final Sprite[] sprites;
+    // We only use ONE Sprite to do all the drawing
+    private final StampSprite stamp;
+
+    // Ring buffer of recorded positions
+    private final float[] px = new float[TRAIL_CAPACITY + 1];
+    private final float[] py = new float[TRAIL_CAPACITY + 1];
+    private int head = 0;
+    private int count = 0;
+
+    private boolean spawning = false;
+    private float lastX = Float.NaN;
+    private float lastY = Float.NaN;
+    private float currentFPS = 60f;
 
     private final float offsetX;
     private final float offsetY;
 
-    private int nextSpriteIndex = 0;
-    private boolean spawning = false;
-    private float lastX = Float.NaN;
-    private float lastY = Float.NaN;
-
     public CursorTrail(TextureRegion trailTex, CursorSprite cursor) {
-        sprites = new Sprite[TRAIL_CAPACITY];
+        // Initialize our single stamp
+        stamp = new StampSprite(0, 0, trailTex);
+        stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE); // Additive blending
+        stamp.setScale(cursor.baseSize);
 
         offsetX = -trailTex.getWidth() / 2f;
         offsetY = -trailTex.getHeight() / 2f;
-
-        for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            Sprite s = new Sprite(0, 0, trailTex);
-            s.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE);
-            s.setAlpha(0f);
-            s.setScale(cursor.baseSize);
-            sprites[i] = s;
-            attachChild(s);
-        }
     }
 
     public void setParticlesSpawnEnabled(boolean enabled) {
         spawning = enabled;
         if (!enabled) {
+            head = 0;
+            count = 0;
             lastX = Float.NaN;
             lastY = Float.NaN;
-            nextSpriteIndex = 0;
-            for (Sprite s : sprites) {
-                s.setAlpha(0f);
-            }
         }
     }
 
     public void update(float x, float y, float dt) {
+        if (dt > 0) currentFPS = 1f / dt;
         if (!spawning) return;
 
         if (Float.isNaN(lastX)) {
-            stamp(x, y);
+            pushPoint(x, y);
             lastX = x;
             lastY = y;
             return;
         }
 
-        // ── Distance-based stamping (much cheaper than Bresenham every frame) ──
-        final float dx = x - lastX;
-        final float dy = y - lastY;
-        final float distSq = dx * dx + dy * dy;
+        // Fill all points along the path
+        addCursorPoints((int) lastX, (int) lastY, (int) x, (int) y);
+        lastX = x;
+        lastY = y;
 
-        if (distSq > STAMP_STEP * STAMP_STEP) {
-            final float dist = (float) Math.sqrt(distSq);
-            final int numStamps = Math.max(1, (int) (dist / STAMP_STEP));
+        // Remove from tail proportionally
+        if (count > 2) {
+            float FPSmod = Math.max(currentFPS, 1f) / 60f;
+            int removeCount = Math.min((int) (count / (12f * FPSmod)) + 1, count - 2);
+            count -= removeCount;
+        }
+    }
 
-            final float stepX = dx / numStamps;
-            final float stepY = dy / numStamps;
+    private void pushPoint(float x, float y) {
+        px[head % (TRAIL_CAPACITY + 1)] = x;
+        py[head % (TRAIL_CAPACITY + 1)] = y;
+        head++;
+        if (count < TRAIL_CAPACITY + 1) count++;
+    }
 
-            float px = lastX;
-            float py = lastY;
+    private void addCursorPoints(int x1, int y1, int x2, int y2) {
+        int d = 0, dy = Math.abs(y2 - y1), dx = Math.abs(x2 - x1);
+        int dy2 = dy << 1, dx2 = dx << 1;
+        int ix = x1 < x2 ? 1 : -1, iy = y1 < y2 ? 1 : -1;
 
-            for (int k = 1; k <= numStamps; k++) {
-                px += stepX;
-                py += stepY;
-                stamp(px, py);
+        if (dy <= dx) {
+            for (int i = 0; ; i++) {
+                if (i == SAMPLE_SIZE) {
+                    pushPoint(x1, y1);
+                    i = 0;
+                }
+                if (x1 == x2) break;
+                x1 += ix;
+                d += dy2;
+                if (d > dx) {
+                    y1 += iy;
+                    d -= dx2;
+                }
             }
+        } else {
+            for (int i = 0; ; i++) {
+                if (i == SAMPLE_SIZE) {
+                    pushPoint(x1, y1);
+                    i = 0;
+                }
+                if (y1 == y2) break;
+                y1 += iy;
+                d += dx2;
+                if (d > dy) {
+                    x1 += ix;
+                    d -= dy2;
+                }
+            }
+        }
+    }
 
-            lastX = x;
-            lastY = y;
+    @Override
+    protected void onManagedDraw(GL10 pGL, Camera pCamera) {
+        if (count == 0) return;
+
+        int segments = Math.min(count - 1, TRAIL_CAPACITY);
+        int start = head - count;
+        float alphaStep = segments > 0 ? 1f / segments : 0f;
+
+        // Draw the single stamp multiple times directly to the GPU
+        for (int i = 0; i < segments; i++) {
+            int idx = (start + i) & Integer.MAX_VALUE;
+            float ax = px[idx % (TRAIL_CAPACITY + 1)];
+            float ay = py[idx % (TRAIL_CAPACITY + 1)];
+
+            stamp.setPosition(ax + offsetX, ay + offsetY);
+            stamp.setAlpha((i + 1) * alphaStep);
+
+            stamp.drawNow(pGL, pCamera);
+        }
+    }
+
+    // A helper class to safely expose AndEngine's protected drawing methods
+    private static class StampSprite extends Sprite {
+        public StampSprite(float pX, float pY, TextureRegion pTextureRegion) {
+            super(pX, pY, pTextureRegion);
         }
 
-        // ── Fade all active stamps (time-based, frame-rate independent) ──
-        fadeTrails(dt);
-    }
-
-    private void stamp(float x, float y) {
-        final Sprite s = sprites[nextSpriteIndex];
-        s.setPosition(x + offsetX, y + offsetY);
-        s.setAlpha(1f);
-
-        nextSpriteIndex = (nextSpriteIndex + 1) % TRAIL_CAPACITY;
-    }
-
-    private void fadeTrails(float dt) {
-        final float fadeAmount = FADE_RATE * dt;
-
-        for (int i = 0; i < TRAIL_CAPACITY; i++) {
-            final Sprite s = sprites[i];
-            if (s.getAlpha() > 0f) {
-                float newAlpha = s.getAlpha() - fadeAmount;
-                s.setAlpha(Math.max(0f, newAlpha));
-            }
+        public void drawNow(GL10 pGL, Camera pCamera) {
+            super.onManagedDraw(pGL, pCamera);
         }
     }
 }

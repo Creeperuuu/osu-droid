@@ -19,8 +19,6 @@ public class CursorEntity extends Entity {
 
         if (Config.isUseParticles()) {
             TextureRegion trailTex = ResourceManager.getInstance().getTexture("cursortrail");
-
-            // Pass the texture to our optimized trail
             trail = new CursorTrail(trailTex, cursorSprite);
             trail.setParticlesSpawnEnabled(false);
         }
@@ -33,8 +31,7 @@ public class CursorEntity extends Entity {
     public void setShowing(boolean showing) {
         isShowing = showing;
         setVisible(showing);
-        if (trail != null)
-            trail.setParticlesSpawnEnabled(showing);
+        if (trail != null) trail.setParticlesSpawnEnabled(showing);
     }
 
     public void click() {
@@ -44,17 +41,16 @@ public class CursorEntity extends Entity {
     public void update(float pSecondsElapsed) {
         if (isShowing) {
             cursorSprite.update(pSecondsElapsed);
-            if (trail != null)
+            if (trail != null) {
+                // Pass current position and delta-time straight to our math arrays
                 trail.update(getX(), getY(), pSecondsElapsed);
+            }
         }
         super.onManagedUpdate(pSecondsElapsed);
     }
 
     public void attachToScene(Scene fgScene) {
-        if (trail != null) {
-            // Attaching the parent trail entity automatically brings all 128 child sprites with it
-            fgScene.attachChild(trail);
-        }
+        if (trail != null) fgScene.attachChild(trail);
         fgScene.attachChild(this);
     }
 
