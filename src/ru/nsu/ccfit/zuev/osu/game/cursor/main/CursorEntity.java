@@ -19,6 +19,8 @@ public class CursorEntity extends Entity {
 
         if (Config.isUseParticles()) {
             TextureRegion trailTex = ResourceManager.getInstance().getTexture("cursortrail");
+
+            // Pass the texture to our optimized trail
             trail = new CursorTrail(trailTex, cursorSprite);
             trail.setParticlesSpawnEnabled(false);
         }
@@ -49,8 +51,10 @@ public class CursorEntity extends Entity {
     }
 
     public void attachToScene(Scene fgScene) {
-        if (trail != null)
-            trail.attachToScene(fgScene);
+        if (trail != null) {
+            // Attaching the parent trail entity automatically brings all 128 child sprites with it
+            fgScene.attachChild(trail);
+        }
         fgScene.attachChild(this);
     }
 
