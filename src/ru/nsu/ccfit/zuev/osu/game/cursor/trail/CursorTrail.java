@@ -14,15 +14,10 @@ import ru.nsu.ccfit.zuev.skins.OsuSkin;
 public class CursorTrail extends Entity {
 
     private static final int TRAIL_CAPACITY = 2048;
-
-    private static final float TRAIL_LIFETIME = 0.8f;
-
-    private static final float MAX_OPACITY = 0.6f;
-
-    private static final float FADE_DURATION_RATIO = 0.8f;
-
-    private static final float SCALE_DURATION_RATIO = 1.2f;
-
+    private static final float TRAIL_LIFETIME = 0.5f;
+    private static final float MAX_OPACITY = 0.4f;
+    private static final float FADE_DURATION_RATIO = 1.0f;
+    private static final float SCALE_DURATION_RATIO = 1.0f;
     private static final float TRAIL_STEP_SIZE = 2.2f;
 
     private final StampSprite stamp;
@@ -48,16 +43,20 @@ public class CursorTrail extends Entity {
         this.cursor = cursor;
         this.stamp = new StampSprite(0, 0, trailTex);
 
+        // SWITCHED: Standard Alpha Blending (0x302, 0x303)
+        // This supports soft edges and true transparency without the "glow"
+        stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE_MINUS_SRC_ALPHA);
+
         this.baseSize = cursor.baseSize;
         offsetX = -trailTex.getWidth() / 2f;
         offsetY = -trailTex.getHeight() / 2f;
     }
 
     public void setParticlesSpawnEnabled(boolean enabled) {
-        spawning = enabled;
+        this.spawning = enabled;
+        // We stopped resetting 'count' and 'head' here.
+        // This allows existing particles to finish their lifetime naturally.
         if (!enabled) {
-            head = 0;
-            count = 0;
             p1x = Float.NaN;
             p1y = Float.NaN;
             p2x = Float.NaN;
@@ -95,8 +94,8 @@ public class CursorTrail extends Entity {
     private void fillPathLinear(float x1, float y1, float x2, float y2) {
         float dx = x2 - x1, dy = y2 - y1;
         float distance = (float) Math.sqrt(dx * dx + dy * dy);
-
         int steps = (int) (distance / TRAIL_STEP_SIZE);
+
         if (steps <= 0) {
             pushPoint(x2, y2);
             return;
@@ -114,37 +113,39 @@ public class CursorTrail extends Entity {
 
         float currentLifetime = TRAIL_LIFETIME * GameHelper.getSpeedMultiplier();
 
-        int activeCount = 0;
-        for (int i = 0; i < count; i++) {
-            int idx = (head - 1 - i);
-            if (idx < 0) idx += TRAIL_CAPACITY;
-            if (currentTime - pTime[idx] > currentLifetime) break;
-            activeCount++;
-        }
-        count = activeCount;
-
+        // ROTATION CHECK
         if (OsuSkin.get().isRotateCursorTrail()) {
             stamp.setRotation(cursor.getRotation());
         } else {
             stamp.setRotation(0f);
         }
 
-        for (int i = count - 1; i >= 0; i--) {
+        // DRAW & PRUNE LOOP
+        int newCount = 0;
+        for (int i = 0; i < count; i++) {
             int idx = (head - 1 - i);
             if (idx < 0) idx += TRAIL_CAPACITY;
 
             float age = currentTime - pTime[idx];
+            if (age > currentLifetime) {
+                // Since points are ordered by age, once we hit one too old,
+                // all subsequent points in the loop are also too old.
+                break;
+            }
+            newCount++;
 
             float fadeLifeRatio = Math.max(0f, 1f - (age / (currentLifetime * FADE_DURATION_RATIO)));
             float scaleLifeRatio = Math.max(0f, 1f - (age / (currentLifetime * SCALE_DURATION_RATIO)));
 
             stamp.setPosition(px[idx] + offsetX, py[idx] + offsetY);
-
             stamp.setScale(baseSize * scaleLifeRatio);
             stamp.setAlpha(MAX_OPACITY * fadeLifeRatio);
 
             stamp.drawNow(pGL, pCamera);
         }
+
+        // Update count for the next frame so old points eventually disappear
+        this.count = newCount;
     }
 
     private static class StampSprite extends Sprite {
