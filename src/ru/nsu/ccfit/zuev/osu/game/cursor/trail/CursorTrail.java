@@ -7,26 +7,27 @@ import org.anddev.andengine.opengl.texture.region.TextureRegion;
 
 import javax.microedition.khronos.opengles.GL10;
 
+import ru.nsu.ccfit.zuev.osu.game.GameHelper;
 import ru.nsu.ccfit.zuev.osu.game.cursor.main.CursorSprite;
+import ru.nsu.ccfit.zuev.skins.OsuSkin;
 
 public class CursorTrail extends Entity {
 
-    // ── Tuning Parameters ────────────────────────────────────────────────
     private static final int TRAIL_CAPACITY = 2048;
 
-    // Trail timing (in seconds).
-    private static final float TRAIL_LIFETIME = 0.5f;
+    private static final float TRAIL_LIFETIME = 0.8f;
 
-    // ADJUST THIS: Controls the maximum opacity at the head of the trail.
-    // 1.0f = very bright, 0.4f = soft glow, 0.1f = very dim.
-    private static final float BLEND_INTENSITY = 0.2f;
+    private static final float MAX_OPACITY = 0.6f;
 
-    // ADJUST THIS: Distance between spawned particles.
-    // 2.0f or 3.0f prevents the pure white "stacking" blowout effect.
+    private static final float FADE_DURATION_RATIO = 0.8f;
+
+    private static final float SCALE_DURATION_RATIO = 1.2f;
+
     private static final float TRAIL_STEP_SIZE = 2.2f;
-    // ─────────────────────────────────────────────────────────────────────
 
     private final StampSprite stamp;
+    private final CursorSprite cursor;
+
     private final float[] px = new float[TRAIL_CAPACITY];
     private final float[] py = new float[TRAIL_CAPACITY];
     private final float[] pTime = new float[TRAIL_CAPACITY];
@@ -44,10 +45,8 @@ public class CursorTrail extends Entity {
     private final float baseSize;
 
     public CursorTrail(TextureRegion trailTex, CursorSprite cursor) {
-        stamp = new StampSprite(0, 0, trailTex);
-
-        // Additive Blending keeps the neon/glowing look
-        stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE);
+        this.cursor = cursor;
+        this.stamp = new StampSprite(0, 0, trailTex);
 
         this.baseSize = cursor.baseSize;
         offsetX = -trailTex.getWidth() / 2f;
@@ -113,15 +112,22 @@ public class CursorTrail extends Entity {
     protected void onManagedDraw(GL10 pGL, Camera pCamera) {
         if (count == 0) return;
 
-        // Prune old particles
+        float currentLifetime = TRAIL_LIFETIME * GameHelper.getSpeedMultiplier();
+
         int activeCount = 0;
         for (int i = 0; i < count; i++) {
             int idx = (head - 1 - i);
             if (idx < 0) idx += TRAIL_CAPACITY;
-            if (currentTime - pTime[idx] > TRAIL_LIFETIME) break;
+            if (currentTime - pTime[idx] > currentLifetime) break;
             activeCount++;
         }
         count = activeCount;
+
+        if (OsuSkin.get().isRotateCursorTrail()) {
+            stamp.setRotation(cursor.getRotation());
+        } else {
+            stamp.setRotation(0f);
+        }
 
         for (int i = count - 1; i >= 0; i--) {
             int idx = (head - 1 - i);
@@ -129,16 +135,13 @@ public class CursorTrail extends Entity {
 
             float age = currentTime - pTime[idx];
 
-            // Calculate a ratio from 1.0 (new) to 0.0 (old)
-            float lifeRatio = Math.max(0f, 1f - (age / TRAIL_LIFETIME));
+            float fadeLifeRatio = Math.max(0f, 1f - (age / (currentLifetime * FADE_DURATION_RATIO)));
+            float scaleLifeRatio = Math.max(0f, 1f - (age / (currentLifetime * SCALE_DURATION_RATIO)));
 
             stamp.setPosition(px[idx] + offsetX, py[idx] + offsetY);
 
-            // Trail shrinks as it gets older
-            stamp.setScale(baseSize * lifeRatio);
-
-            // Trail fades out seamlessly
-            stamp.setAlpha(BLEND_INTENSITY * lifeRatio);
+            stamp.setScale(baseSize * scaleLifeRatio);
+            stamp.setAlpha(MAX_OPACITY * fadeLifeRatio);
 
             stamp.drawNow(pGL, pCamera);
         }
