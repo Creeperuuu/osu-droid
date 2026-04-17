@@ -14,10 +14,10 @@ import ru.nsu.ccfit.zuev.skins.OsuSkin;
 public class CursorTrail extends Entity {
 
     private static final int TRAIL_CAPACITY = 2048;
-    private static final float TRAIL_LIFETIME = 0.5f;
+    private static final float TRAIL_LIFETIME = 1.0f;
     private static final float MAX_OPACITY = 0.4f;
-    private static final float FADE_DURATION_RATIO = 1.0f;
-    private static final float SCALE_DURATION_RATIO = 1.0f;
+    private static final float FADE_DURATION_RATIO = 0.6f;
+    private static final float SCALE_DURATION_RATIO = 1.6f;
     private static final float TRAIL_STEP_SIZE = 2.2f;
 
     private final StampSprite stamp;
@@ -32,8 +32,9 @@ public class CursorTrail extends Entity {
     private boolean spawning = false;
     private float currentTime = 0f;
 
-    private float p1x = Float.NaN, p1y = Float.NaN;
-    private float p2x = Float.NaN, p2y = Float.NaN;
+    // Midpoint Bezier tracking variables
+    private float lastInputX = Float.NaN, lastInputY = Float.NaN;
+    private float lastMidX = Float.NaN, lastMidY = Float.NaN;
 
     private final float offsetX;
     private final float offsetY;
@@ -43,8 +44,7 @@ public class CursorTrail extends Entity {
         this.cursor = cursor;
         this.stamp = new StampSprite(0, 0, trailTex);
 
-        // SWITCHED: Standard Alpha Blending (0x302, 0x303)
-        // This supports soft edges and true transparency without the "glow"
+        // Standard Alpha Blending for soft edges without visual overlap clipping
         stamp.setBlendFunction(GL10.GL_SRC_ALPHA, GL10.GL_ONE_MINUS_SRC_ALPHA);
 
         this.baseSize = cursor.baseSize;
@@ -54,13 +54,12 @@ public class CursorTrail extends Entity {
 
     public void setParticlesSpawnEnabled(boolean enabled) {
         this.spawning = enabled;
-        // We stopped resetting 'count' and 'head' here.
-        // This allows existing particles to finish their lifetime naturally.
         if (!enabled) {
-            p1x = Float.NaN;
-            p1y = Float.NaN;
-            p2x = Float.NaN;
-            p2y = Float.NaN;
+            // Reset tracking so the next touch starts a fresh curve
+            lastInputX = Float.NaN;
+            lastInputY = Float.NaN;
+            lastMidX = Float.NaN;
+            lastMidY = Float.NaN;
         }
     }
 
@@ -68,19 +67,29 @@ public class CursorTrail extends Entity {
         currentTime += dt;
         if (!spawning) return;
 
-        if (Float.isNaN(p2x)) {
-            p2x = x;
-            p2y = y;
+        if (Float.isNaN(lastInputX)) {
+            // First point of a new trail
+            lastInputX = x;
+            lastInputY = y;
+            lastMidX = x;
+            lastMidY = y;
             pushPoint(x, y);
             return;
         }
 
-        p1x = p2x;
-        p1y = p2y;
-        p2x = x;
-        p2y = y;
+        // Calculate the new midpoint between the last input and current input
+        float midX = (lastInputX + x) / 2f;
+        float midY = (lastInputY + y) / 2f;
 
-        fillPathLinear(p1x, p1y, p2x, p2y);
+        // Draw a smooth bezier curve from the last midpoint to the new midpoint,
+        // using the last raw input as the control point.
+        fillPathBezier(lastMidX, lastMidY, lastInputX, lastInputY, midX, midY);
+
+        // Update tracking variables for the next frame
+        lastInputX = x;
+        lastInputY = y;
+        lastMidX = midX;
+        lastMidY = midY;
     }
 
     private void pushPoint(float x, float y) {
@@ -91,45 +100,57 @@ public class CursorTrail extends Entity {
         if (count < TRAIL_CAPACITY) count++;
     }
 
-    private void fillPathLinear(float x1, float y1, float x2, float y2) {
-        float dx = x2 - x1, dy = y2 - y1;
-        float distance = (float) Math.sqrt(dx * dx + dy * dy);
+    // Midpoint Quadratic Bezier Curve Smoothing
+    private void fillPathBezier(float x0, float y0, float cx, float cy, float x1, float y1) {
+        // Approximate the arc length of the curve to determine step count
+        float d1 = (float) Math.hypot(cx - x0, cy - y0);
+        float d2 = (float) Math.hypot(x1 - cx, y1 - cy);
+        float distance = d1 + d2;
+        
         int steps = (int) (distance / TRAIL_STEP_SIZE);
 
         if (steps <= 0) {
-            pushPoint(x2, y2);
+            pushPoint(x1, y1);
             return;
         }
 
         for (int i = 1; i <= steps; i++) {
             float t = (float) i / steps;
-            pushPoint(x1 + dx * t, y1 + dy * t);
+            float u = 1f - t;
+            
+            // Quadratic Bezier formula
+            float qx = (u * u * x0) + (2 * u * t * cx) + (t * t * x1);
+            float qy = (u * u * y0) + (2 * u * t * cy) + (t * t * y1);
+            
+            pushPoint(qx, qy);
         }
     }
 
     @Override
     protected void onManagedDraw(GL10 pGL, Camera pCamera) {
+        // [FREEZE FIX] Constantly tick the clock forward during the draw loop
+        // 0.016f represents roughly 60 FPS (1 second / 60 frames)
+        currentTime += 0.016f * GameHelper.getSpeedMultiplier();
+
         if (count == 0) return;
 
         float currentLifetime = TRAIL_LIFETIME * GameHelper.getSpeedMultiplier();
 
-        // ROTATION CHECK
         if (OsuSkin.get().isRotateCursorTrail()) {
             stamp.setRotation(cursor.getRotation());
         } else {
             stamp.setRotation(0f);
         }
 
-        // DRAW & PRUNE LOOP
         int newCount = 0;
         for (int i = 0; i < count; i++) {
             int idx = (head - 1 - i);
             if (idx < 0) idx += TRAIL_CAPACITY;
 
             float age = currentTime - pTime[idx];
+            
+            // Once we reach a particle that is too old, we can stop evaluating older ones
             if (age > currentLifetime) {
-                // Since points are ordered by age, once we hit one too old,
-                // all subsequent points in the loop are also too old.
                 break;
             }
             newCount++;
@@ -144,7 +165,7 @@ public class CursorTrail extends Entity {
             stamp.drawNow(pGL, pCamera);
         }
 
-        // Update count for the next frame so old points eventually disappear
+        // Update count so old points are pruned from the render cycle
         this.count = newCount;
     }
 
